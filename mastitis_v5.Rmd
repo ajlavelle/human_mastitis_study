@@ -1,0 +1,735 @@
+---
+title: "mastitis_v5"
+author: "Aonghus Lavelle"
+date: '2024-06-23'
+output: html_document
+---
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(message = FALSE)
+knitr::opts_chunk$set(warning = FALSE)
+library(phyloseq)
+library(ggplot2)
+library(RColorBrewer)
+library(ggpubr)
+library(vegan)
+library(knitr)
+#need ggrepel later
+```
+
+## R Markdown
+
+## Import and view data ##
+
+Summary: OTU table, taxaonomic assignments, metadata
+
+```{r}
+#read in phyloseq object
+
+ps <- readRDS("ps_mastitis_v5.rds")
+ps
+
+
+print("Phyla")
+table(tax_table(ps)[, "Phylum"], exclude = NULL)
+
+#remove ASV's not assigned to a phylum level
+ps1 <- subset_taxa(ps, !is.na(Phylum) & !Phylum %in% 
+                    c("", "uncharacterized", "p__unidentified"))
+
+
+
+#remove samples with <1000 reads
+ps2 <- prune_samples(sample_sums(ps1) > 999, ps1)
+
+
+print(paste((ntaxa(ps) - ntaxa(ps1)), "taxa removed as not assigned to phylum.", sep = " "))
+
+print(paste((nsamples(ps1) - nsamples(ps2)), "samples removed as <1000 reads.", sep = " "))
+
+#set factors
+sample_data(ps2)$Health_state <- factor(sample_data(ps2)$Health_state, levels = c("Healthy", "Subclinical_mastitis",
+                                                                                  "Clinical_mastitis"))
+
+sample_data(ps1)$Health_state <- factor(sample_data(ps1)$Health_state, levels = c("Healthy", "Subclinical_mastitis",
+                                                                                  "Clinical_mastitis"))
+
+#create SCC cut-off
+sample_data(ps2)$SCC_state <- unlist(lapply(sample_data(ps2)$Health_state, 
+                                                 function(x) if(x == "Healthy"){"SCC<250"} else 
+                                                 {"SCC>250"}))
+
+my_comparisons <- 
+  list(c("Healthy", "Clinical_mastitis"), c("Healthy", "Subclinical_mastitis"), c("Subclinical_mastitis", "Clinical_mastitis"))
+
+pal <- c("forestgreen", "pink2", "red")
+
+print(paste(sum(otu_table(ps2)), "total reads post processing", sep = " "))
+
+print(paste(median(rowSums(otu_table(ps2))), "median reads per sample", sep = " "))
+
+print(paste(IQR(rowSums(otu_table(ps2))), "inter-quartile range of reads per sample", sep = " "))
+```
+
+\newpage
+
+## Alpha Diversity ##
+
+Alpha diversity calculated with Observed ASV's and Shannon index
+
+```{r, fig.dim=c(8,5)}
+
+
+p1 <- plot_richness(ps2)
+p2 <- p1$data[p1$data$variable %in% c("Observed", "Shannon"),]
+p3 <- ggplot(p2, aes(x=Health_state, y=value, fill=Health_state)) + 
+  facet_wrap(~variable, scales = "free") +
+  geom_boxplot(outlier.shape = NA, alpha=0.6) + 
+  scale_fill_manual("Group", values = pal) + xlab("") + ylab("") + 
+  geom_point(size=2) + theme_classic()
+
+p4 <- p3 +
+  theme(text = element_text(size=18),
+        legend.position = "right",
+        axis.text.x = element_text(angle = 45, hjust=1)) + 
+  scale_color_manual("Group", values = pal)
+
+p4 + stat_compare_means(comparisons = rev(my_comparisons),label = "p.signif")
+
+
+p5 <- ggplot(p2, aes(x=SCC_state, y=value, fill=SCC_state)) + 
+  facet_wrap(~variable, scales = "free") +
+  geom_boxplot(outlier.shape = NA, alpha=0.6) + 
+  scale_fill_manual("SCC", values = c("green", "violetred")) + xlab("") + ylab("") + 
+  geom_point(size=2) + theme_classic()
+
+p6 <- p5 +
+  theme(text = element_text(size=18),
+        legend.position = "right",
+        axis.text.x = element_text(angle = 45, hjust=1)) + 
+  scale_color_manual("Group", values = pal)
+
+p6 + stat_compare_means(comparisons = list(c("SCC<250", "SCC>250")),label = "p.signif")
+
+
+```
+
+
+\newpage
+
+## Beta diversity ##
+
+Bray-Curtis Divergence used as a distance metric for health state.
+\
+\
+
+
+#Bray-Curtis
+
+```{r, fig.dim=c(8,5)}
+
+
+
+ps.transf <- transform_sample_counts(ps2, function(x) x/sum(x))
+
+ord.meas <- ordinate(ps.transf, method = "PCoA", distance = "bray")
+pal <- c("green", "pink2", "red")
+plot_ordination(ps.transf, ord.meas, color = "Health_state") + geom_point(size=2) + 
+  theme_classic() + 
+  theme(text = element_text(size=18), axis.text = element_text(size=16), 
+        legend.position = "right") + 
+  scale_color_manual("Group", values = pal) + stat_ellipse(level = 0.95) +
+  ggtitle("Bray-Curtis Divergence: Group")
+
+
+```
+
+
+PERMANOVA results for Bray-Curtis Divergence
+
+
+```{r}
+set.seed(101)
+dist.meas <- phyloseq::distance(ps.transf, method = "bray")
+set.seed(101)
+adonis.res <- adonis(dist.meas ~ 
+                       sample_data(ps.transf)$Health_state, 
+                     permutations = 999)
+
+kable(adonis.res$aov.tab)
+
+
+```
+
+
+\newpage
+
+## Beta diversity ##
+
+Bray-Curtis Divergence used as a distance metric for sequencing run.
+\
+\
+
+#Bray-Curtis
+
+```{r, fig.dim=c(8,5)}
+
+
+
+ps.transf <- transform_sample_counts(ps2, function(x) x/sum(x))
+
+ord.meas <- ordinate(ps.transf, method = "PCoA", distance = "bray")
+pal <- c("green", "purple")
+plot_ordination(ps.transf, ord.meas, color = "run") + geom_point(size=2) + 
+  theme_classic() + 
+  theme(text = element_text(size=18), axis.text = element_text(size=16), 
+        legend.position = "right") + 
+  scale_color_manual("Run", values = pal) + stat_ellipse(level = 0.95) +
+  ggtitle("Bray-Curtis Divergence: Sequencing run")
+
+
+```
+
+
+PERMANOVA results for Bray-Curtis Divergence by sequencing run
+
+
+```{r}
+set.seed(101)
+dist.meas <- phyloseq::distance(ps.transf, method = "bray")
+set.seed(101)
+adonis.res <- adonis(dist.meas ~ 
+                       sample_data(ps.transf)$run, 
+                     permutations = 999)
+
+kable(adonis.res$aov.tab)
+
+```
+
+\newpage
+
+## Beta diversity ##
+
+Bray-Curtis Divergence used as a distance metric for SCC count.
+\
+\
+
+
+#Bray-Curtis
+
+```{r, fig.dim=c(8,5)}
+
+
+
+ps.transf <- transform_sample_counts(ps2, function(x) x/sum(x))
+
+ord.meas <- ordinate(ps.transf, method = "PCoA", distance = "bray")
+pal <- c("green", "violetred")
+plot_ordination(ps.transf, ord.meas, color = "SCC_state") + geom_point(size=2) + 
+  theme_classic() + 
+  theme(text = element_text(size=18), axis.text = element_text(size=16), 
+        legend.position = "right") + 
+  scale_color_manual("SCC cutoff", values = pal) + stat_ellipse(level = 0.95) +
+  ggtitle("Bray-Curtis Divergence: SCC cutoff")
+
+
+```
+
+
+PERMANOVA results for Bray-Curtis Divergence by SCC count
+
+
+```{r}
+set.seed(101)
+dist.meas <- phyloseq::distance(ps.transf, method = "bray")
+set.seed(101)
+adonis.res <- adonis(dist.meas ~ 
+                       sample_data(ps.transf)$SCC_state, 
+                     permutations = 999)
+
+kable(adonis.res$aov.tab)
+
+```
+
+\newpage
+## Lefse
+
+Differential abundance by LEfSe
+\
+\
+\
+
+```{r}
+
+#prepare data for LEfSe
+ps4.genus <- tax_glom(ps2, "Genus", NArm = FALSE)
+ps4.genus <- transform_sample_counts(ps4.genus, function(x) x/sum(x))
+if(!all(colnames(otu_table(ps4.genus)) == rownames(tax_table(ps4.genus)))){
+  print("Error! Taxa names don't match.")
+}
+otus.genus <- otu_table(ps4.genus)
+colnames(otus.genus) <- paste(paste0("k_", tax_table(ps4.genus)[,1]), 
+                              paste0("p_", tax_table(ps4.genus)[,2]), 
+                              paste0("c_", tax_table(ps4.genus)[,3]), 
+                              paste0("o_", tax_table(ps4.genus)[,4]), 
+                              paste0("f_", tax_table(ps4.genus)[,5]), 
+                              paste0("g_", tax_table(ps4.genus)[,6]), sep = "|")
+
+
+ps4.family <- tax_glom(ps2, "Family", NArm = FALSE)
+ps4.family <- transform_sample_counts(ps4.family, function(x) x/sum(x))
+if(!all(colnames(otu_table(ps4.family)) == rownames(tax_table(ps4.family)))){
+  print("Error! Taxa names don't match.")
+}
+otus.family <- otu_table(ps4.family)
+colnames(otus.family) <- paste(paste0("k_", tax_table(ps4.family)[,1]), 
+                               paste0("p_", tax_table(ps4.family)[,2]), 
+                               paste0("c_", tax_table(ps4.family)[,3]), 
+                               paste0("o_", tax_table(ps4.family)[,4]), 
+                               paste0("f_", tax_table(ps4.family)[,5]), sep = "|")
+
+
+ps4.order <- tax_glom(ps2, "Order", NArm = FALSE)
+ps4.order <- transform_sample_counts(ps4.order, function(x) x/sum(x))
+if(!all(colnames(otu_table(ps4.order)) == rownames(tax_table(ps4.order)))){
+  print("Error! Taxa names don't match.")
+}
+otus.order <- otu_table(ps4.order)
+colnames(otus.order) <- paste(paste0("k_", tax_table(ps4.order)[,1]), 
+                              paste0("p_", tax_table(ps4.order)[,2]), 
+                              paste0("c_", tax_table(ps4.order)[,3]), 
+                              paste0("o_", tax_table(ps4.order)[,4]), sep = "|")
+
+
+ps4.class <- tax_glom(ps2, "Class", NArm = FALSE)
+ps4.class <- transform_sample_counts(ps4.class, function(x) x/sum(x))
+if(!all(colnames(otu_table(ps4.class)) == rownames(tax_table(ps4.class)))){
+  print("Error! Taxa names don't match.")
+}
+otus.class <- otu_table(ps4.class)
+colnames(otus.class) <- paste(paste0("k_", tax_table(ps4.class)[,1]), 
+                              paste0("p_", tax_table(ps4.class)[,2]), 
+                              paste0("c_", tax_table(ps4.class)[,3]), sep = "|")
+
+
+ps4.phylum <- tax_glom(ps2, "Phylum", NArm = FALSE)
+ps4.phylum <- transform_sample_counts(ps4.phylum, function(x) x/sum(x))
+if(!all(colnames(otu_table(ps4.phylum)) == rownames(tax_table(ps4.phylum)))){
+  print("Error! Taxa names don't match.")
+}
+otus.phylum <- otu_table(ps4.phylum)
+colnames(otus.phylum) <- paste(paste0("k_", tax_table(ps4.phylum)[,1]), 
+                               paste0("p_", tax_table(ps4.phylum)[,2]), sep = "|")
+
+
+ps4.kingdom <- tax_glom(ps2, "Kingdom", NArm = FALSE)
+ps4.kingdom <- transform_sample_counts(ps4.kingdom, function(x) x/sum(x))
+if(!all(colnames(otu_table(ps4.kingdom)) == rownames(tax_table(ps4.kingdom)))){
+  print("Error! Taxa names don't match.")
+}
+otus.kingdom <- otu_table(ps4.kingdom)
+colnames(otus.kingdom) <- paste0("k_", tax_table(ps4.kingdom)[,1])
+
+
+otus.cat.b <- rbind(t(otus.kingdom), t(otus.phylum), t(otus.class), t(otus.order), t(otus.family), t(otus.genus))
+
+if(!all(colnames(otus.cat.b) == rownames(sample_data(ps2)))){
+  print("Error! Sample names don't match.")
+}
+
+
+#compare data across major groups
+data.b <- otus.cat.b
+sample.b <- t(sample_data(ps2))
+data.b <- data.b[,colnames(data.b) %in% colnames(sample.b)]
+
+#
+data.scc <- data.b
+sample.scc <- sample.b["SCC_state",,drop=FALSE]
+if(!all(colnames(data.scc) == colnames(sample.scc))){
+  print("Error! Sample names don't match.")
+}
+lefse.in.scc <- rbind(sample.scc, data.scc)
+write.table(lefse.in.scc, "lefse.in.scc.txt", quote = FALSE, sep = "\t")
+
+
+#run through LEFSE galaxy server using default options
+
+#set colour palette for Phyla
+
+set.seed(101)
+cols <- sample(colors()[!grepl("grey|gray", colors())], 24, replace = FALSE)
+#cols <- c("gold", "green", "purple", "darkgreen", "blue", "salmon", "red", "cyan")
+names(cols) <- unique(as.vector(tax_table(ps4.genus)[,2]))[order(unique(as.vector(tax_table(ps4.genus)[,2])))]
+
+
+```
+
+
+
+# lefse SCC<250000 vs SCC>250000
+
+Positive values Health, negative values Clinical mastitis
+
+```{r, fig.dim=c(8,5)}
+
+#import cleaned lefse output
+if (file.exists("lefse.out.scc.txt")) {
+  lefse.out <- read.table("lefse.out.scc.txt", sep = "\t")
+lefse.out <- lefse.out[!is.na(lefse.out$V4),]
+colnames(lefse.out) <- c("Taxa2", "LDA2", "Health_state", "LDA1", "p.val")
+lefse.out$LDA <- lefse.out$LDA1
+lefse.out$Phylum <- unlist(lapply(lefse.out$Taxa2, function(x) strsplit(x, "[.]")[[1]][2]))
+lefse.out$Phylum <- gsub("p_", "", lefse.out$Phylum)
+lefse.out$Taxa <- unlist(lapply(lefse.out$Taxa2, function(x) strsplit(x, "[.]")[[1]][length(strsplit(x, "[.]")[[1]])]))
+lefse.out$Taxa[lefse.out$Taxa == "g_NA"] <- paste(unlist(lapply(lefse.out$Taxa2, function(x) strsplit(x, "[.]")[[1]][5]))[lefse.out$Taxa == "g_NA"], "g_NA", sep = ".")
+lefse.out$Taxa[grepl("f_UCG", lefse.out$Taxa)] <- paste(unlist(lapply(lefse.out$Taxa2, function(x) strsplit(x, "[.]")[[1]][4]))[grepl("f_UCG", lefse.out$Taxa)], 
+                                                                lefse.out$Taxa[grepl("f_UCG", lefse.out$Taxa)], sep = ".")
+lefse.out$LDA[lefse.out$Health_state == "SCC>250000"] <- lefse.out$LDA[lefse.out$Health_state == "SCC>250000"]*-1
+lefse.out <- lefse.out[order(lefse.out$LDA),]
+cols <- cols[names(cols) %in% lefse.out$Phylum]
+cols <- c("gold", "dodgerblue", "firebrick1")
+ggplot(lefse.out, aes(x=Taxa, y=LDA, fill=Phylum)) + geom_bar(stat = "identity") + 
+  ylim(c(-6,6)) + theme_classic() + scale_fill_manual(values = cols) + 
+  scale_x_discrete(limits=lefse.out$Taxa) + coord_flip()
+} else {
+  print("No features detected by LEFSE")
+}
+
+```
+
+
+
+\newpage
+
+## Boxplots
+
+Genus-level boxplots from lefse output
+\
+\
+\
+
+```{r}
+#functions for plotting
+clean_taxa_names <- function(ps.x=NULL){
+  #print warning
+  warning("This function starts naming at 'Genus' level and assumes that the 6th column of 'tax_table(ps.x)' is 'Genus': in other words, the order is:\n
+          \t'Kingdom' 'Phylum' 'Class' 'Order' 'Family' 'Genus' 'Species'\n\n\n", immediate. = TRUE)
+  #helper functions
+  log.fun <- function(x) {is.na(x) | grepl("uncultur|ambiguous", ignore.case = TRUE, x)}
+  log.fun.ucg <- function(x) {grepl("^UCG", ignore.case = TRUE, x)}
+  
+  otu.vec <- c()
+  otu.vec <- tax_table(ps.x)[,6]
+  if(sum(unlist(lapply(otu.vec, log.fun))) > 0){
+    temp.vec <- unlist(lapply(otu.vec, log.fun)) & !unlist(lapply(tax_table(ps.x)[,5], log.fun))
+    otu.vec[temp.vec] <- paste(tax_table(ps.x)[,5][temp.vec],"g.NA", sep = "_")
+  }
+  if(sum(unlist(lapply(otu.vec, log.fun))) > 0){
+    temp.vec <- unlist(lapply(otu.vec, log.fun)) & !unlist(lapply(tax_table(ps.x)[,4], log.fun))
+    otu.vec[temp.vec] <- paste(tax_table(ps.x)[,4][temp.vec],"g.NA", sep = "_")
+  }
+  if(sum(unlist(lapply(otu.vec, log.fun))) > 0){
+    temp.vec <- unlist(lapply(otu.vec, log.fun)) & !unlist(lapply(tax_table(ps.x)[,3], log.fun))
+    otu.vec[temp.vec] <- paste(tax_table(ps.x)[,3][temp.vec],"g.NA", sep = "_")
+  }
+  
+  if(sum(unlist(lapply(otu.vec, log.fun))) > 0){
+    temp.vec <- unlist(lapply(otu.vec, log.fun)) & !unlist(lapply(tax_table(ps.x)[,2], log.fun))
+    otu.vec[temp.vec] <- paste(tax_table(ps.x)[,2][temp.vec],"g.NA", sep = "_")
+  }
+  if(sum(unlist(lapply(otu.vec, log.fun))) > 0){
+    temp.vec <- unlist(lapply(otu.vec, log.fun)) & !unlist(lapply(tax_table(ps.x)[,1], log.fun))
+    otu.vec[temp.vec] <- paste(tax_table(ps.x)[,1][temp.vec],"g.NA", sep = "_")
+  }
+  if(sum(unlist(lapply(otu.vec, log.fun.ucg))) > 0){
+    temp.vec <- unlist(lapply(otu.vec, log.fun.ucg))
+    otu.vec[temp.vec] <- paste(tax_table(ps.x)[,5][temp.vec],tax_table(ps.x)[,6][temp.vec], sep = "_")
+  }
+  otu.vec <- as.vector(otu.vec)
+  return(otu.vec)
+}
+
+assign_taxa_names <- function(ps.x=NULL, agglom=NULL){
+  library(Biobase)
+  #ensure phyloseq object
+  if(is.null(ps.x) | class(ps.x) != "phyloseq"){
+    stop("'ps.x' must supply a phyloseq object")
+  }
+  #check that ps in correct orientation
+  if(taxa_are_rows(ps.x)){
+    stop("Taxa are rows - please re-orientate phyloseq object.")
+  }
+  if(!is.null(agglom)){
+    if(!(agglom %in% c("Genus", "genus"))){
+      stop("Only agglomeration at 'Genus' level currently supported by this function")
+    }
+  }
+  #agglomerate
+  if(!(is.null(agglom))){
+    ps.x <- tax_glom(ps.x, taxrank = agglom, NArm = FALSE)
+    otus <- otu_table(ps.x)
+    colnames(otus) <- clean_taxa_names(ps.x)
+    if(length(colnames(otus)[!(isUnique(colnames(otus)))]) > 0){
+      colnames(otus)[!(isUnique(colnames(otus)))] <- paste(colnames(otus)[!(isUnique(colnames(otus)))],
+                                                           seq(1,length(colnames(otus)[!(isUnique(colnames(otus)))]),1), sep=".")
+    }
+  } else {
+    otus <- otu_table(ps.x)
+    colnames(otus) <- clean_taxa_names(ps.x)
+    colnames(otus) <- paste(colnames(otus), "ASV", seq(1,length(colnames(otus)),1), sep = ".")
+  }
+  return(otus)
+}
+
+
+
+boxplot_individual_taxa <- function(ps.x, taxa=NULL, norm=NULL, agglom=NULL, variable=NULL, comparisons=NULL){
+  library(zCompositions)
+  library(compositions)
+  library(ggplot2)
+  library(ggpubr)
+  otus.df <- assign_taxa_names(ps.x = ps.x, agglom = agglom)
+  if(norm == "TSS"){
+    otus.df <- sweep(otus.df, 1, rowSums(otus.df), "/")
+    plot_df <- data.frame(sample_data(ps.x), temp = otus.df[,taxa]*100)
+    y.lab <- paste0(taxa, " (%)")
+  } else if(norm == "CLR"){
+    otus.df <- cmultRepl(otus.df, method = "CZM")
+    otus.df <- clr(otus.df)
+    plot_df <- data.frame(sample_data(ps.x), temp = otus.df[,taxa])
+    y.lab <- paste0(taxa, " (CLR)")
+  } else {
+    stop("Error - 'norm' must be one of 'TSS' or 'CLR'")
+  }
+  taxa <- gsub("-|[[]|[]]|[ ]", ".", taxa)
+  names(plot_df)[names(plot_df) == 'temp'] <- taxa
+  
+  g.1 <- ggplot(plot_df, aes_string(x=variable,y=taxa, colour=variable, fill=variable)) + geom_boxplot(outlier.colour = NA, alpha=0.4) + 
+    geom_jitter(aes(alpha=0.7)) + theme_classic() + 
+    stat_compare_means(comparisons = comparisons) + xlab("") + ylab(y.lab) + 
+    theme(axis.text.x = element_text(angle = 45, hjust = 1), axis.title.x = element_blank())
+  return(g.1)
+}
+
+
+
+
+
+```
+
+
+\newpage
+
+# Streptococcus
+
+```{r}
+
+boxplot_individual_taxa(ps2, taxa="Streptococcus", norm = "TSS", agglom = "Genus", 
+                        variable = "Health_state", comparisons = 
+                          list(c("Healthy", "Subclinical_mastitis"), c("Subclinical_mastitis", "Clinical_mastitis"),c("Healthy", "Clinical_mastitis"))) + scale_colour_manual(values = c("forestgreen", "pink2", "red")) + scale_fill_manual(values = c("forestgreen", "pink2", "red")) + theme(text=element_text(size=18))
+
+
+boxplot_individual_taxa(ps2, taxa="Streptococcus", norm = "TSS", agglom = "Genus", 
+                        variable = "SCC_state", comparisons = 
+                          list(c("SCC<250", "SCC>250"))) + scale_colour_manual(values = c("forestgreen", "violetred")) + scale_fill_manual(values = c("forestgreen", "violetred")) + theme(text=element_text(size=18)) + theme(axis.text.x = element_blank(), legend.position = "none")
+
+
+
+```
+
+
+\newpage
+
+## Taxonomy
+
+Genus-level taxa plots ordered by Streptococcus
+\
+\
+\
+
+```{r, fig.dim=c(13,8)}
+
+
+
+
+ps.transf <- tax_glom(ps2, "Genus", NArm = FALSE)
+top20 <- names(taxa_sums(ps.transf)[rev(order(taxa_sums(ps.transf)))][1:20])
+ps.transf <- transform_sample_counts(ps.transf, function(x) x/sum(x))
+ps.transf <- prune_taxa(taxa_names(ps.transf) %in% top20, ps.transf)
+
+
+
+#colour
+
+set.seed(103)
+fill.pal <- sample(colors()[!grepl("grey|gray", colors())], 20, replace = FALSE)
+fill.pal[1] <- "bisque"
+fill.pal[5] <- "cornflowerblue"
+fill.pal[6] <- "salmon"
+fill.pal[8] <- "cyan"
+fill.pal[9] <- "red3"
+fill.pal[11] <- "tan"
+fill.pal[18] <- "grey"
+fill.pal[19] <- "gold"
+
+#order by Streptococcus
+ps.strep <- prune_taxa(as.vector(tax_table(ps.transf)[,6]) == "Streptococcus", ps.transf)
+sample.order <- c(names(sample_sums(subset_samples(ps.strep, sample_data(ps.strep)$Health_state == "Healthy"))[rev(order(sample_sums(subset_samples(ps.strep, sample_data(ps.strep)$Health_state == "Healthy"))))]),
+                  names(sample_sums(subset_samples(ps.strep, sample_data(ps.strep)$Health_state == "Subclinical_mastitis"))[rev(order(sample_sums(subset_samples(ps.strep, sample_data(ps.strep)$Health_state == "Subclinical_mastitis"))))]),
+                  names(sample_sums(subset_samples(ps.strep, sample_data(ps.strep)$Health_state == "Clinical_mastitis"))[rev(order(sample_sums(subset_samples(ps.strep, sample_data(ps.strep)$Health_state == "Clinical_mastitis"))))]))
+
+#plot
+p1 <- plot_bar(ps.transf, fill = "Genus")
+
+p1.data <- p1$data
+p1.data$Sample <- factor(p1.data$Sample, levels = sample.order)
+
+
+#pdf("plots/taxonomy_barplot.pdf", width = 14, height = 8)
+ggplot(p1.data, aes(x=Sample, y=Abundance, fill=Genus), colour="black") + geom_bar(stat = "identity") + facet_wrap(~Health_state, scales = "free") + 
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1), text = element_text(size=18),axis.text.y = element_text(size=19)) + scale_fill_manual(values = fill.pal) + scale_colour_manual(values = "black")
+#dev.off()
+
+```
+
+
+
+\newpage
+
+## Other Figures 
+
+Figure 1
+
+```{r, fig.dim=c(13,8)}
+#Figure 1
+cell_counts <- read.table("cell_counts.txt", header = T)
+
+shapiro.test(cell_counts$DMSCC)
+shapiro.test(cell_counts$Automated)
+
+ggplot(cell_counts, aes(x=DMSCC,y=Automated)) + geom_point() +
+  stat_smooth(method = "lm") + theme_classic() + stat_cor() + 
+  ylab("Automated method") + xlab("Automated method (SCC/ml)") + 
+  ylab("DMSCC (SCC/ml)") + theme()
+
+
+
+```
+
+
+\newpage
+
+Figure 3
+
+```{r, fig.dim=c(13,8)}
+
+#Figure 3
+immune <- sample_data(ps2)
+immune$IL8[immune$IL8 == 0] <- NA
+
+immune <- immune[!is.na(immune$IL8),]
+my_comparisons <- 
+  list(c("Healthy", "Clinical_mastitis"), c("Healthy", "Subclinical_mastitis"))
+
+ggplot(immune, aes(x=Health_state,y=IL8,colour=Health_state)) + geom_boxplot(outlier.colour = NA) + geom_jitter(size=2) +
+  scale_y_log10() + theme_classic() +
+  xlab("Group") + ylab("IL8 (pg/mL)") + 
+  scale_colour_manual("Group",values = c("forestgreen", "pink2", "red"),
+                      labels=c("H","SM","CM")) +
+  stat_compare_means(comparisons = rev(my_comparisons), label = "p.signif", method = "wilcox.test") + 
+  scale_x_discrete(labels=c("Healthy"="H","Subclinical_mastitis"="SM","Clinical_mastitis"="CM"))
+
+
+#confirm manually
+wilcox.test(immune[immune$Health_state != "Clinical_mastitis",]$IL8~immune[immune$Health_state != "Clinical_mastitis",]$Health_state)$p.value
+wilcox.test(immune[immune$Health_state != "Subclinical_mastitis",]$IL8~immune[immune$Health_state != "Subclinical_mastitis",]$Health_state)$p.value
+
+
+
+aggregate(immune$IL8, by=list(immune$Health_state), median)
+aggregate(immune$IL8, by=list(immune$Health_state), IQR)
+
+ggplot(immune, aes(x=Health_state,y=SCC,colour=Health_state)) + geom_boxplot() + geom_jitter(size=2) +
+  scale_y_log10() + theme_classic() +
+  xlab("Group") + ylab("SCC (cells/mL)") + 
+  scale_colour_manual("Group",values = c("forestgreen", "pink2", "red"),
+                      labels=c("H","SM","CM")) +
+  stat_compare_means(comparisons = rev(my_comparisons), label = "p.signif", method = "wilcox.test") + 
+  scale_x_discrete(labels=c("Healthy"="H","Subclinical_mastitis"="SM","Clinical_mastitis"="CM"))
+
+
+#confirm manually
+wilcox.test(immune[immune$Health_state != "Clinical_mastitis",]$SCC~immune[immune$Health_state != "Clinical_mastitis",]$Health_state)$p.value
+wilcox.test(immune[immune$Health_state != "Subclinical_mastitis",]$SCC~immune[immune$Health_state != "Subclinical_mastitis",]$Health_state)$p.value
+
+
+aggregate(immune$SCC, by=list(immune$Health_state), median)
+aggregate(immune$SCC, by=list(immune$Health_state), IQR)
+
+```
+
+
+\newpage
+
+Figure 4
+
+```{r, fig.dim=c(13,8)}
+#Figure 4
+immune <- sample_data(ps2)
+immune$IL8[immune$IL8 == 0] <- NA
+
+immune <- immune[!is.na(immune$IL8),]
+
+ggplot(immune, aes(x=IL8,SCC)) + geom_point(aes(colour=Health_state), size=2) +
+  scale_y_log10() + stat_smooth(method = "gam", colour="black", lty=2) + theme_classic() +
+  xlab("IL8 (pg/mL)") + ylab("SCC (cells/mL) [log10-transformed]") + 
+  scale_colour_manual("Group",values = c("forestgreen", "pink2", "red"),
+                      labels=c("H","SM","CM")) + 
+  annotate(geom = "text", x=300,y=1e7, 
+           label=paste0("rho=",round(cor.test(immune$IL8, immune$SCC, method = "spearman")$estimate,2)))
+
+
+```
+
+
+
+
+\newpage
+
+Supplementary Figure 1
+
+```{r, fig.dim=c(13,8)}
+#Figure S1
+library(ggrepel)
+ps2.g <- tax_glom(ps2, "Genus", NArm = FALSE)
+
+ps.x <- ps2.g
+
+otus_merged <- otu_table(ps.x)
+colnames(otus_merged) <- tax_table(ps.x)[,6]
+otus_merged_prop <- sweep(otus_merged, 1, rowSums(otus_merged), "/")
+
+core_micro <- data.frame(Prevalence=round(colSums(otus_merged > 0)*100/30,2), 
+                         Mean=round(colMeans(otus_merged_prop)*100,4),
+                         Genus=names(round(colSums(otus_merged > 0)*100/30,2)))
+
+core_micro <- core_micro[order(core_micro$Prevalence, decreasing = TRUE),]
+core_micro$Rank <- seq(1, nrow(core_micro), 1)
+core_micro$Genus2 <- apply(core_micro,1,function(x) if(x[1] > 50){x[3]}else{""})
+
+ggplot(core_micro, aes(x=Rank, y=Prevalence, size=Mean, label=Genus2)) + 
+  geom_point() + theme_classic() + theme(text = element_text(size=18)) + 
+  geom_label_repel(size=4) + geom_hline(yintercept = 50, colour="red", lty=2) + 
+  guides(size=guide_legend(title="Mean\nabundance")) + 
+  ylab("Prevalence (%)") + ggtitle("Prevalence of genera in breast milk")
+
+
+```
+
+
+
+
+
